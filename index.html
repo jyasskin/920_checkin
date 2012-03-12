@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>Check-in list</title>
+    <script type="text/javascript" src="js/jquery-1.7.1.min.js"></script>
+    <script type="text/javascript" src="js/sammy-0.7.0.js"></script>
+    <script type="text/javascript" src="js/knockout-2.0.0rc.debug.js"></script>
+    <!-- Main App -->
+    <script type="text/javascript" src="js/lindy_checkin.js"></script>
+    <style type="text/css"><!--
+table { border-collapse:collapse }
+th,td { border:thin black solid }
+    --></style>
+  </head>
+  <body>
+    <ul id="tabs">
+      <li><a data-bind="href: '#class_list' + (current_class_name() ? '?class=' + current_class_name() : '')">Class List</a></li>
+      <li><a data-bind="href: current_class_name() ? '#students?class=' + current_class_name() : undefined">Students</a></li>
+      <li><a data-bind="href: current_class_name() ? '#checkin?class=' + current_class_name() : undefined">Check In</a></li>
+    </ul>
+
+    <div data-bind="visible: subpage()=='class_list'">
+      <h1>Classes</h1>
+      <table id="class_table">
+        <thead>
+          <tr><th>Name</th><th>Month</th><th>Dates</th></tr>
+        </thead>
+        <tbody data-bind="foreach: classes">
+          <tr data-bind="if: editing">
+            <td><input data-bind="value: class_name"></input></td>
+            <td><select data-bind="value: displayMonth, options: $root.displayMonths"></select><input title="Year" data-bind="value: year" size="4"></input></td>
+            <td data-bind="foreach: possible_dates">
+              <label><input type="checkbox" data-bind="value: $data, checked: $parent.dates"></input><span data-bind="text: $data"></span></label>
+            </td>
+            <td>
+              <button data-bind="click: Save">Save</button> <button data-bind="click: Cancel">Cancel</button>
+            </td>
+          </tr>
+          <tr data-bind="ifnot: editing">
+            <td><a data-bind="text: class_name, href: '#students?class=' + class_name()"></a></td>
+            <td data-bind="text: displayMonth() + ' ' + year()"></td>
+            <td data-bind="text: dates().join(', ')"></td>
+            <td>
+              <button data-bind="click: Edit">Edit</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <button data-bind="click: AddClass">Add a class</button>
+    </div>
+
+    <div data-bind="visible: subpage()=='students', with: current_class()">
+      <h1>Students in <span data-bind="text: class_name"></span></h1>
+      <table id="student_table">
+        <thead>
+          <tr><th>Name</th><th>Role</th>
+          <!-- ko foreach: dates -->
+          <th data-bind="text: $data"></th>
+          <!-- /ko --></tr>
+        </thead>
+        <tbody data-bind="foreach: students">
+          <tr data-bind="ifnot: editing">
+            <td data-bind="text: name"></td>
+            <td data-bind="text: role"></td>
+            <!-- ko foreach: attendance -->
+            <td>
+              <span data-bind="if: present">&#x2714;<!-- U+2714 is a bold check mark. --></span>
+            </td>
+            <!-- /ko -->
+            <td><button data-bind="click: toggleEditing">Edit</button></td>
+          </tr>
+          <tr data-bind="if: editing">
+            <td><input placeholder="Student's name" data-bind="value: name"/></td>
+            <td><select data-bind="value: role, options: $root.roles"></select></td>
+            <!-- ko foreach: attendance -->
+            <td><input type="checkbox" data-bind="checked: present"/></td>
+            <!-- /ko -->
+            <td><button data-bind="click: toggleEditing">Save</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <button data-bind="click: AddStudent">Add a student</button>
+    </div>
+
+    <div data-bind="if: subpage()=='checkin'">
+      <datalist id="all_student_names" data-bind="foreach: all_student_names">
+        <option data-bind="text: $data"></option>
+      </datalist>
+      Student Name: <input list="all_student_names" data-bind="value:checkin_query, valueUpdate: 'afterkeydown'"></input>
+      <ul data-bind="foreach: selected_students">
+        <li>
+          <span data-bind="text: name"></span>
+          <table>
+            <thead><tr><th>Class</th><th>Role</th><th>Present</th></tr></thead>
+            <tbody data-bind="foreach: classes">
+              <tr>
+                <td data-bind="text: class_name"></td>
+                <td data-bind="text: role"></td>
+                <td><input type="checkbox" data-bind="checked: attendance"/></td>
+              </tr>
+            </tbody>
+          </table>
+        </li>
+      </ul>
+    </div>
+  </body>
+</html>

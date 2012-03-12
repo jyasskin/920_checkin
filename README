@@ -1,0 +1,5 @@
+This app helps check people into classes at a swing dance venue.
+
+To run it locally, install Google AppEngine's dev_appserver.py into
+your path, and install mysqldb's python library. Then run
+./run_dev_appserver.sh and browse to http://localhost:8080.
