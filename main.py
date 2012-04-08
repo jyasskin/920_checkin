@@ -1,13 +1,47 @@
-from ndb import context
+from google.appengine.ext import db
+from google.appengine.ext import ndb
 import calendar
 import datetime
 import json
+import logging
 import model
-import ndb
 import re
 import webapp2
 
 _MONTH_REGEX = re.compile('^(?P<year>\d{4})-(?P<month>\d{2})$')
+
+
+def to_json(obj):
+    return obj.to_json()
+
+
+@ndb.transactional
+def initialize_classes(month, class_types):
+    db_month = model.Month.get_or_insert_async(month.key.id())
+    existing_classes = model.Class.query(ancestor=month.key
+                                         ).fetch_async()
+
+    # Compute new classes while we're trying to fetch any
+    # existing classes.
+    new_classes = []
+    thursdays = month.Thursdays()
+    for class_type in class_types:
+        new_classes.append(model.Class(parent=month.key,
+                                       type=class_type.key,
+                                       days=thursdays))
+
+    # Ensure month object exists. Unlike put()s, this doesn't get
+    # completed at the end of the transaction.
+    db_month.get_result()
+
+    if existing_classes.get_result():
+        # If there are already classes in this month,
+        # don't insert new ones.
+        return existing_classes.get_result()
+
+    ndb.put_multi_async(new_classes)
+    return new_classes
+
 
 class InitialDataHandler(webapp2.RequestHandler):
     def request_month(self):
@@ -18,22 +52,49 @@ class InitialDataHandler(webapp2.RequestHandler):
         else:
             return datetime.date.today().replace(day=1)
 
-    @context.toplevel
+    @ndb.toplevel
     def get(self):
-        month = self.request_month()
-        class_types = ClassType.query().fetch_async()
-        classes = Class.query(Class.month == month).fetch_async()
-        attendances = Attendance.query(Attendance.klass.month == month
-                                       ).fetch_async()
-        students = {}
-        for attendance in attendances.get_result():
-            if attendance.student not in students:
-                students[attendance.student] = attendance.student.get_async()
-        
+        month = model.Month.fromdate(self.request_month())
+        month_data = ndb.Query(ancestor=month.key).fetch_async()
+        students = model.Student.query().fetch_async()
+        class_types = model.ClassType.query().fetch_async()
+
+        json_data = dict(month=month,
+                         students=students.get_result(),
+                         class_types=class_types.get_result(),
+                         classes=[], signups=[])
+
+        for elem in month_data.get_result():
+            if isinstance(elem, model.Class):
+                json_data['classes'].append(elem)
+            elif isinstance(elem, model.Signup):
+                json_data['signups'].append(elem)
+            elif isinstance(elem, model.Month):
+                pass  # The month is already included.
+            else:
+                logging.error('Unexpected data type: {0}({1})'.format(
+                        type(elem), str(elem)))
+
+        if not json_data['classes']:
+            # No classes for this month yet; initialize them from class_types.
+            try:
+                json_data['classes'] = initialize_classes(
+                    month, class_types.get_result())
+            except db.TransactionFailedError:
+                logging.error('Class insertion failed multiple times, '
+                              'assuming classes were inserted by another task.')
+                json_data['classes'] = model.Class.query(ancestor=month.key
+                                                         ).fetch()
+        self.response.content_type = 'application/json'
+        indent, separators = None, (',', ':')
+        if self.request.params.get('prettyprint'):
+            indent, separators = 2, (', ', ': ')
+        json.dump(json_data, self.response, default=to_json,
+                  indent=indent, separators=separators)
 
 
 class InstallSampleDataHandler(webapp2.RequestHandler):
-    @context.toplevel
+    @ndb.toplevel
     def get(self):
         self.response.out.write("""<!DOCTYPE html>
 <html>
@@ -48,51 +109,62 @@ class InstallSampleDataHandler(webapp2.RequestHandler):
   </body>
 </html>""")
 
-    @context.toplevel
+    @ndb.toplevel
     def post(self):
-        yield (model.Student.query().map_async(lambda key: key.delete_async(),
-                                               keys_only=True),
-               model.Attendance.query().map_async(lambda key: key.delete_async(),
-                                                  keys_only=True),
+        yield (model.Student.query().map_async(
+                lambda key: key.delete_async(), keys_only=True),
+               model.Signup.query().map_async(
+                lambda key: key.delete_async(), keys_only=True),
+               model.Class.query().map_async(
+                lambda key: key.delete_async(), keys_only=True),
+               model.ClassType.query().map_async(
+                lambda key: key.delete_async(), keys_only=True),
                )
 
-        student1, student2, student3, student4, student5, student6 = yield (
+        level1 = model.ClassType(name='Level 1', time=datetime.time(20, 20))
+        level2 = model.ClassType(name='Level 2', time=datetime.time(19, 20))
+        level3 = model.ClassType(name='Level 3', time=datetime.time(20, 20))
+        special_ex = model.ClassType(name='Special Extensions',
+                                     time=datetime.time(19, 20))
+
+        (student1, student2, student3, student4, student5, student6,
+         level1_key, level2_key, level3_key, special_ex_key) = yield (
             model.Student(name='First1 Last1').put_async(),
             model.Student(name='First2 Last2').put_async(),
             model.Student(name='First3 Last3').put_async(),
             model.Student(name='First4 Last4').put_async(),
             model.Student(name='First5 Last5').put_async(),
             model.Student(name='First6 Last6').put_async(),
+            level1.put_async(), level2.put_async(),
+            level3.put_async(), special_ex.put_async(),
             )
-        level1 = model.ClassType(name='Level 1', time=datetime.time(8, 20))
-        level2 = model.ClassType(name='Level 2', time=datetime.time(7, 20))
-        level3 = model.ClassType(name='Level 3', time=datetime.time(8, 20))
-        special_ex = model.ClassType(name='Special Extensions',
-                                     time=datetime.time(7, 20))
-        this_month = model.Month(month=datetime.date.today())
-        this_level1 = model.Class(type=level1, month=this_month)
-        this_level2 = model.Class(type=level2, month=this_month)
-        this_level3 = model.Class(type=level3, month=this_month)
-        this_special_ex = model.Class(type=special_ex, month=this_month)
-        thursdays = list(day for day in
-                         calendar.Calendar().itermonthdates(
-                this_month.month.year, this_month.month.month)
-                         if day.weekday() == 3)
-        model.Signup(klass=this_level3, student=student3, default_role='Lead',
-                     presence=[model.Presence(day=thursdays[0], role='Follow'),
-                               model.Presence(day=thursdays[1])]).put_async()
-        model.Dropin(klass=this_level2, student=student3, day=thursdays[0],
-                     role='Lead').put_async()
-        model.Signup(klass=this_special_ex, student=student5,
-                     default_role='Follow').put_async()
-        model.Signup(klass=this_special_ex, student=student6,
-                     default_role='Lead').put_async()
-        model.Dropin(klass=this_level1, student=student2, role='Follow',
-                     day=thursdays[1]).put_async()
-        model.Dropin(klass=this_level1, student=student2, role='Follow',
-                     day=thursdays[2]).put_async()
-        model.Signup(klass=this_level3, student=student5,
-                     default_role='Follow').put_async().get_result()
+        this_month = model.Month.fromdate(datetime.date.today().replace(day=1))
+        (this_level1, this_level2, this_level3, this_special_ex
+         ) = initialize_classes(
+            this_month, [level1, level2, level3, special_ex])
+        thursdays = this_month.Thursdays()
+        model.MonthSignup(parent=this_month.key,
+                          klass=this_level3.key, student=student3, default_role='Lead',
+                          presence=[model.Presence(day=thursdays[0], role='Follow'),
+                                    model.Presence(day=thursdays[1])]).put_async()
+        model.DaySignup(parent=this_month.key,
+                        klass=this_level2.key, student=student3, day=thursdays[0],
+                        role='Lead').put_async()
+        model.MonthSignup(parent=this_month.key,
+                          klass=this_special_ex.key, student=student5,
+                          default_role='Follow').put_async()
+        model.MonthSignup(parent=this_month.key,
+                          klass=this_special_ex.key, student=student6,
+                          default_role='Lead').put_async()
+        model.DaySignup(parent=this_month.key,
+                        klass=this_level1.key, student=student2, role='Follow',
+                        day=thursdays[1]).put_async()
+        model.DaySignup(parent=this_month.key,
+                        klass=this_level1.key, student=student2, role='Follow',
+                        day=thursdays[2]).put_async()
+        model.MonthSignup(parent=this_month.key,
+                          klass=this_level3.key, student=student5,
+                          default_role='Follow').put_async().get_result()
 
         self.response.out.write("""<!DOCTYPE html>
 <html>
